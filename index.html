@@ -7267,5 +7267,61 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
   }, 500);
 })();
 
+/* ===== v110.1：图片失败自动重试；音频真出错时说和做一致 ===== */
+(function () {
+  if (window.__v110_1) return;
+  window.__v110_1 = 1;
+  function isArt(im) {
+    return im && im.tagName === 'IMG' &&
+      (im.id === 'room' || (' ' + (im.className || '') + ' ').indexOf(' sprite ') > -1);
+  }
+  function say(t) { try { if (typeof setStatus === 'function') setStatus(t); } catch (e) {} }
+  document.addEventListener('error', function (ev) {
+    var im = ev.target;
+    if (!isArt(im)) return;
+    var n = Number(im.__loadRetry || 0);
+    if (n >= 2) { say('这张图重试两次都没下来：' + (im.alt || im.id || '')); return; }
+    im.__loadRetry = n + 1;
+    var src = String(im.getAttribute('src') || '').split('?')[0];
+    if (!src) return;
+    say('图片没加载上，正在重试（' + im.__loadRetry + '/2）：' + (im.alt || ''));
+    setTimeout(function () { im.style.visibility = ''; im.src = src + '?r=' + Date.now(); }, 700);
+  }, true);
+  document.addEventListener('load', function (ev) {
+    var im = ev.target;
+    if (!isArt(im)) return;
+    im.style.visibility = '';
+    if (im.__loadRetry) { im.__loadRetry = 0; say(''); }
+  }, true);
+
+  var errs = 0, lastSong = null;
+  var hook = setInterval(function () {
+    var a = window.muAudio; if (!a) return;
+    clearInterval(hook);
+    a.addEventListener('error', function () {
+      var code = a.error && a.error.code;
+      var cur = window.muSongs && window.muCur >= 0 ? window.muSongs[window.muCur] : null;
+      if (!cur) return;
+      if (lastSong !== cur.id) { lastSong = cur.id; errs = 0; }
+      errs++;
+      var txt = code === 4 ? '这首歌手机播不了，我换下一首'
+        : code === 2 ? '网络断了，我在重连这首歌'
+        : '音频出问题了，我在重连';
+      say(txt);
+      try { muChatSpeak(txt, true); } catch (e) {}
+      if (errs >= 2 || code === 4) { try { muStep(1); } catch (e) {} return; }
+      var pos = a.currentTime || 0;
+      try {
+        a.src = String(window.__v110Src || a.src).split('?')[0] + '?e=' + Date.now();
+        a.addEventListener('loadedmetadata', function once() {
+          a.removeEventListener('loadedmetadata', once);
+          try { a.currentTime = pos; } catch (e) {}
+          try { a.play(); } catch (e) {}
+        });
+      } catch (e) {}
+    });
+  }, 600);
+})();
+
 </script>
 </body></html>
