@@ -1918,7 +1918,7 @@ textarea:focus{outline:0;border-color:#7fb0dd;box-shadow:0 0 0 3px rgba(127,176,
 </style></head><body>
 
 <header>
-  <strong>微微的冰蓝色小屋 <span class="badge">v71</span></strong>
+  <strong>微微的冰蓝色小屋 <span class="badge">v108</span></strong>
   <p>窗外真实天气 · 门会响 · 留言板 · 挨着坐下 · 网格寻路 · 上床睡觉</p>
 </header>
 
@@ -6934,5 +6934,64 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
   },true);
 })();
 
+</script>
+<script>
+/* v108：她打的字一律交给他本人回；页面不再自己生成任何一句（罐头回复已停用） */
+(function(){
+  if(window.__v108Hersay)return; window.__v108Hersay=1;
+  function base(){ try{ return String(window.__hutBase?window.__hutBase():'').replace(/\/+$/,'') }catch(e){ return '' } }
+  function list(){ var p=root(); return p?p.querySelector('#muChatList'):null }
+  var pend=null, ptimer=null, pinv=null;
+  function root(){
+    var p=document.getElementById('musicPage');
+    if(p)return p;
+    try{ if(typeof musicPage!=='undefined'&&musicPage)return musicPage; }catch(e){}
+    return null;
+  }
+  function clearPend(){
+    if(ptimer){clearTimeout(ptimer);ptimer=null;}
+    if(pinv){clearInterval(pinv);pinv=null;}
+    if(pend){ if(pend.parentNode)pend.parentNode.removeChild(pend); pend=null; }
+  }
+  function addPend(){
+    clearPend();
+    var r=root(); if(!r)return;
+    function put(){
+      var l=r.querySelector('#muChatList'); if(!l)return;
+      if(!pend){pend=document.createElement('div');pend.className='muMsg ai';pend.textContent='…';}
+      if(!pend.parentNode){l.appendChild(pend);l.scrollTop=l.scrollHeight;}
+    }
+    put();
+    pinv=setInterval(put,400);
+  }
+  function note(t){ clearPend(); if(typeof window.muChatPush==='function')window.muChatPush('sys',t); }
+  var _push=window.muChatPush;
+  if(_push)window.muChatPush=function(role,text){
+    if(role==='ai'&&String(text||'').trim())clearPend();
+    return _push.apply(this,arguments);
+  };
+  window.muLocalReply=function(){return '';};
+  window.muChatSend=function(){
+    var p=document.getElementById('musicPage'); if(!p)return;
+    var inp=p.querySelector('#muChatInput'); if(!inp)return;
+    var v=String(inp.value||'').trim(); if(!v)return;
+    inp.value='';
+    var hist=[];
+    try{ hist=(window.muChatHistory||[]).slice(-6).map(function(m){return {role:m.role,text:m.content};}); }catch(e){}
+    if(typeof window.muChatPush==='function')window.muChatPush('me',v);
+    var b=base();
+    if(!b){ note('后端没连上，这句没送出去。'); return; }
+    addPend();
+    ptimer=setTimeout(function(){
+      note('还没等到他回（他那边可能没醒）。这句话已经存着，他醒了会看到。');
+    },100000);
+    fetch(b+'/room/hersay',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text:v,history:hist,ctx:(window.muChatContext?window.muChatContext():'')})})
+      .then(function(r){return r.json();})
+      .then(function(d){ if(!d||d.ok!==true){ note('这句没送出去（后端没收下）。'); } })
+      .catch(function(){ note('后端没连上，这句没送出去。'); });
+  };
+  try{window.muStopProactive&&window.muStopProactive();}catch(e){}
+})();
 </script>
 </body></html>
