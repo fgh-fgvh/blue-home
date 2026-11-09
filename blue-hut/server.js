@@ -38,6 +38,14 @@ function operitToken() {
   return ''
 }
 
+function fmtDur(sec) {
+  sec = Math.max(0, Math.floor(Number(sec) || 0))
+  if (sec < 60) return sec + ' 秒'
+  const m = Math.floor(sec / 60), s = sec % 60
+  if (m < 60) return m + ' 分 ' + s + ' 秒'
+  return Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分'
+}
+
 function todayKey() {
   const d = new Date()
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
@@ -309,7 +317,8 @@ function rpc(msg) {
     return Promise.resolve(say('正在听《' + herState.song + '》' + (herState.ar ? '，' + herState.ar : '') +
       (herState.playing ? '，正在播' : '，暂停中') + '，音量 ' + Math.round((herState.vol || 0) * 100) +
       (herState.night ? '，现在是夜晚' : '，白天') +
-      (herState.lyric ? '。歌词正唱到「' + herState.lyric + '」' : '')))
+      (herState.lyric ? '。歌词正唱到「' + herState.lyric + '」' : '') +
+      (herState.together && herState.together.sec ? '。你们一起听了 ' + fmtDur(herState.together.sec) + (herState.together.running ? '' : '（现在暂停中）') : '')))
   }
   if (name === 'hut_her_events') {
     const n = Math.max(1, Math.min(20, Number(args.limit || 8)))
