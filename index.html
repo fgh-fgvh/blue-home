@@ -6832,6 +6832,15 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
   }
   function wake(){
     var t=wakeText();
+    // 优先走系统分享，能直接把这段话丢进 Operit 的输入框；分享不支持才退回复制
+    try{
+      if(navigator.share){
+        navigator.share({title:'小屋·一起听',text:t}).then(function(){
+          toast('发出去了');
+        },function(){ copyBack(t); });
+        return;
+      }
+    }catch(e){}
     copyBack(t);
   }
   window.__muWake=wake;
