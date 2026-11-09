@@ -59,6 +59,12 @@ function loadState() {
     if (Array.isArray(raw.playList)) playList = raw.playList
     if (Array.isArray(raw.himMsgs)) himMsgs = raw.himMsgs
     if (Array.isArray(raw.herMsgs)) herMsgs = raw.herMsgs
+    // 重启后 id 延续，别从 1 重新开始（否则新消息会跟旧消息撞 id）
+    let maxId = Number(raw.seq || 0)
+    const bump = (arr) => { if (Array.isArray(arr)) arr.forEach((m) => { const v = Number(m && m.id) || 0; if (v > maxId) maxId = v }) }
+    bump(herMsgs); bump(himMsgs); bump(hisLog)
+    if (diary) Object.keys(diary).forEach((k) => bump(diary[k] && diary[k].entries))
+    seq = Math.max(Number(seq) || 0, maxId)
     if (raw.diary && typeof raw.diary === 'object') {
       Object.keys(raw.diary).forEach((k) => {
         const v = raw.diary[k]
@@ -76,7 +82,7 @@ function saveState() {
   try {
     fs.writeFileSync(stateFile, JSON.stringify({
       herState: herState, hisLog: hisLog.slice(-200), herEvents: herEvents.slice(-200),
-      playList: playList, diary: diary, himMsgs: himMsgs.slice(-50), herMsgs: herMsgs.slice(-100)
+      playList: playList, diary: diary, himMsgs: himMsgs.slice(-50), herMsgs: herMsgs.slice(-100), seq: seq
     }))
   } catch (e) {}
 }
@@ -244,12 +250,19 @@ function buildPrompt(item, history) {
   const lines = []
   lines.push('（小屋·一起听 聊天框）她刚说：「' + item.text + '」')
   const ctx = []
-  if (item.ctx) {
-    ctx.push(String(item.ctx).replace(/[。．.]+$/g, ''))
-  } else {
-    if (st.song) ctx.push('当时一起在听《' + st.song + '》' + (st.ar ? '（' + st.ar + '）' : '') + (st.playing === false ? '，暂停中' : ''))
-    if (st.lyric) ctx.push('正唱到「' + st.lyric + '」')
-    if (st.night) ctx.push('小屋是夜晚')
+  if (item.ctx) ctx.push(String(item.ctx).replace(/[。．.]+$/g, ''))
+  // 不管页面有没有带上下文，服务端都把此刻的音乐状态补一份（AI 不能只知道她说了什么）
+  const st2 = []
+  if (st.song) st2.push('一起在听《' + st.song + '》' + (st.ar ? '（' + st.ar + '）' : '') + (st.paused === false || st.playing ? '，正在放' : '，暂停中'))
+  if (st.pos) st2.push('放到 ' + fmtDur(st.pos) + (st.dur ? ' / ' + fmtDur(st.dur) : ''))
+  if (st.lyric) st2.push('歌词正唱到「' + st.lyric + '」')
+  if (st.together && st.together.sec) st2.push('你们一起听了 ' + fmtDur(st.together.sec) + (st.together.running ? '' : '（现在暂停中）'))
+  if (st.night) st2.push('小屋是夜晚')
+  if (st2.length) {
+    const joined = st2.join('；')
+    // 页面自己那版上下文已经包含歌曲信息时就不重复
+    if (!(ctx.length && /在听|正在放《/.test(ctx[0]))) ctx.push(joined)
+    else if (/放到|一起听了/.test(joined)) ctx.push(joined.replace(/^.*?；(放到)/, '$1'))
   }
   if (ctx.length) lines.push(ctx.join('；') + '。')
   const hist = (Array.isArray(history) ? history.slice(-6) : []).filter((m) => String((m && m.text) || '').trim() && String(m.text).trim() !== item.text)
@@ -268,7 +281,7 @@ function buildPrompt(item, history) {
 function herSay(text, history, ctx) {
   const t = String(text || '').trim()
   if (!t) return null
-  const item = { id: ++seq, text: t, ctx: String(ctx || '').slice(0, 200), at: new Date().toISOString(), read: false, replied: false, taken: false }
+  const item = { id: ++seq, text: t, ctx: String(ctx || '').slice(0, 400), at: new Date().toISOString(), read: false, replied: false, taken: false }
   herMsgs.push(item)
   if (herMsgs.length > 100) herMsgs = herMsgs.slice(-100)
   herEvents.push({ at: item.at, text: '她说了：' + t.slice(0, 80) })
@@ -318,6 +331,7 @@ function rpc(msg) {
       (herState.playing ? '，正在播' : '，暂停中') + '，音量 ' + Math.round((herState.vol || 0) * 100) +
       (herState.night ? '，现在是夜晚' : '，白天') +
       (herState.lyric ? '。歌词正唱到「' + herState.lyric + '」' : '') +
+      (herState.pos ? '。已经放到 ' + fmtDur(herState.pos) + (herState.dur ? ' / ' + fmtDur(herState.dur) : '') : '') +
       (herState.together && herState.together.sec ? '。你们一起听了 ' + fmtDur(herState.together.sec) + (herState.together.running ? '' : '（现在暂停中）') : '')))
   }
   if (name === 'hut_her_events') {
@@ -470,7 +484,14 @@ const hutHandler = (req, res) => {
         const next = {
           song: String(b.state.song || ''), ar: String(b.state.ar || ''),
           playing: !!b.state.playing, vol: Number(b.state.vol || 0),
-          night: !!b.state.night, lyric: String(b.state.lyric || '').slice(0, 60), at: Date.now()
+          night: !!b.state.night, lyric: String(b.state.lyric || '').slice(0, 60), at: Date.now(),
+          // 音乐状态同步：进度、时长、暂停标记、歌曲 id、一起听累计
+          paused: (b.state.paused === undefined ? null : !!b.state.paused),
+          pos: Number(b.state.pos || 0), dur: Number(b.state.dur || 0),
+          songId: (b.state.songId === undefined ? null : b.state.songId),
+          together: (b.state.together && typeof b.state.together === 'object')
+            ? { sec: Number(b.state.together.sec || 0), running: !!b.state.together.running }
+            : (prev.together || null)
         }
         if (next.song && next.song !== prev.song) herEvents.push({ at: new Date().toISOString(), text: '她切到了《' + next.song + '》' + (next.ar ? '（' + next.ar + '）' : '') })
         if (next.song && next.playing !== prev.playing) herEvents.push({ at: new Date().toISOString(), text: (next.playing ? '她开始播《' : '她暂停了《') + next.song + '》' })
@@ -520,9 +541,10 @@ const hutHandler = (req, res) => {
   }
   if ((p === '/room/hersay' || p === '/room/hersay/unread') && req.method === 'GET') {
     const onlyNew = p === '/room/hersay/unread' || u.searchParams.get('unread') === '1'
-    const list = onlyNew ? herMsgs.filter((e) => !e.taken) : herMsgs.slice(-20)
+    const pending = (e) => !e.taken && !e.replied
+    const list = onlyNew ? herMsgs.filter(pending) : herMsgs.slice(-20)
     return json(res, {
-      ok: true, count: list.length, unread: herMsgs.filter((e) => !e.taken).length,
+      ok: true, count: list.length, unread: herMsgs.filter(pending).length,
       items: list.map((e) => ({ id: e.id, text: e.text, ctx: e.ctx || '', at: e.at, taken: !!e.taken, replied: !!e.replied }))
     })
   }
