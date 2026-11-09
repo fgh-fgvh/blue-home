@@ -7030,6 +7030,9 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
   window.muStartTogether = function () {
     var p = document.getElementById('musicPage');
     if (!p) return;
+    // 没真正在放歌就不计时：光打开页面、停在 0 秒不动
+    var a0 = window.muAudio;
+    if (!a0 || a0.paused || !a0.getAttribute('src')) { paint(); return; }
     if (running) return;
     running = true; since = Date.now();
     if (tickTimer) clearInterval(tickTimer);
