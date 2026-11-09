@@ -6353,6 +6353,26 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
   function exec(name,args){
     try{
       args=args||{};
+      if(name==='pause')name='music_pause';
+      if(name==='resume')name='music_resume';
+      if(name==='play_songs'){
+        var raw=(args.songs||[]);
+        if(!raw.length)return '没有歌';
+        muSongs=raw.map(function(x){return {id:x.id,name:x.name,ar:x.ar,al:{},dt:0};});
+        muCur=-1;
+        try{if(typeof muRenderSongs==='function')muRenderSongs();}catch(e){}
+        var first=muSongs[0].name+'，'+muSongs[0].ar;
+        return Promise.resolve(muPlayIndex(0)).then(function(){return '已经开始放《'+first+'》';})['catch'](function(){return '《'+first+'》没放出来';});
+      }
+      if(name==='send_message'){
+        var mt=String(args.text||'').trim();
+        if(!mt)return '没内容';
+        try{
+          if(typeof muChatSpeak==='function')muChatSpeak(mt,false);
+          else if(typeof muChatPush==='function')muChatPush('ai',mt);
+        }catch(e){}
+        return '消息已经发到她聊天里：'+mt;
+      }
       if(name==='play_next'){muStep(1);return '已切到下一首';}
       if(name==='play_prev'){muStep(-1);return '已切到上一首';}
       if(name==='music_pause'){if(muAudio)muAudio.pause();return '已暂停';}
@@ -6492,7 +6512,8 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
       ar:s?(s.ar||''):'',
       playing:(typeof muAudio!=='undefined'&&muAudio)?!muAudio.paused:false,
       vol:(typeof muAudio!=='undefined'&&muAudio)?muAudio.volume:0,
-      night:(typeof nightMode!=='undefined'&&nightMode)?(nightMode==='night'):false
+      night:(typeof nightMode!=='undefined'&&nightMode)?(nightMode==='night'):false,
+      lyric:(function(){var e=document.getElementById('muLyricPill');return e?String(e.textContent||'').trim():'';})()
     };
   }
   function doAction(a){
@@ -6508,7 +6529,29 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
       .then(function(r){return r.json();})
       .then(function(d){
         if(d&&typeof d.server==='number')since=d.server;
+        if(d&&d.his&&d.his.last&&window.__showHis){
+          var hl=d.his.last;
+          if(hl.at!==window.__hisAt){window.__hisAt=hl.at;window.__showHis('他那边：'+(hl.text||''));}
+        }
         if(d&&d.diaryRev&&window.__diaryRev!==d.diaryRev){window.__diaryRev=d.diaryRev;if(window.__diarySync)window.__diarySync(function(){var bp=document.getElementById('bookDetail');if(bp&&bp.classList.contains('onDiary')&&typeof loadDiaryDay==='function')loadDiaryDay();});}
+        var inbox=(d&&d.inbox)||[];
+        if(inbox.length){
+          var ids=[];
+          inbox.forEach(function(m){
+            ids.push(m.id);
+            try{
+              if(m.kind==='message'){
+                muChatPush('ai',m.text);
+                if(window.muChatOpen===false&&typeof muLastPing!=='undefined'){}
+              }
+            }catch(e){}
+          });
+          try{
+            fetch(base+'/room/ack',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({ids:ids})}).catch(function(){});
+          }catch(e){}
+          if(window.__muFlash)window.__muFlash();
+        }
         var list=(d&&d.actions)||[];
         var i=0;
         (function next(){
@@ -6538,10 +6581,11 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
 })();
 
 
-/* v101：日记本改成真的一起看 —— 共同 / 上锁 / 藏起来，并和他那边同步 */
+/* v101：日记按条（各自可锁可藏）＋ 页面上看得见他那边 */
 (function(){
   var syncing=false;
   window.__diaryRev=0;
+  window.__hisEntries=(function(){try{return JSON.parse(localStorage.getItem('blueHomeDiaryEntriesV1')||'{}');}catch(e){return {};}})();
   function base(){try{return String(window.__hutBase?window.__hutBase():'');}catch(e){return '';}}
   function css(){
     if(document.getElementById('v101css'))return;
@@ -6551,30 +6595,25 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
       '.dViz button{border:1px solid rgba(120,160,205,.45);background:rgba(255,255,255,.6);color:#42658c;font-size:10.5px;padding:2px 9px;border-radius:9px;cursor:pointer}'+
       '.dViz button.on{background:#5b93d6;border-color:#5b93d6;color:#fff}'+
       '.dViz .vtag{font-size:10.5px;color:#7d95ae;padding:2px 0}'+
-      '.dViz .vtag.lock{color:#b0764a}';
+      '.dViz .vtag.lock{color:#b0764a}'+
+      '#muHisLine{font-size:10.5px;color:rgba(255,255,255,.62);text-align:center;margin:2px 0 0;line-height:1.4;max-width:86%;margin-left:auto;margin-right:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'+
+      '#musicPage.muLight #muHisLine{color:#7d95ae}';
     document.head.appendChild(st);
   }
   function merge(items){
     var all=diaryStore();
+    var cache={};
     Object.keys(items||{}).forEach(function(k){
-      var n=items[k]||{}, o=all[k]||null;
-      var tNew=String(n.updatedAt||''),tOld=o?String(o.updatedAt||''):'';
-      var hideHis=!!n.aiLocked||!!n.aiHidden;
-      if(!o||tNew>=tOld||hideHis){
-        all[k]={
-          user:n.user||(o?o.user||'':''),
-          ai:hideHis?((o&&o.ai)||''):(n.ai||''),
-          userNote:n.userNote||(o?o.userNote||'':''),
-          aiNote:hideHis?((o&&o.aiNote)||''):(n.aiNote||''),
-          userMood:n.userMood||(o?o.userMood||'':''),
-          aiMood:n.aiMood||(o?o.aiMood||'':''),
-          important:!!n.important,
-          userVis:n.userVis||'shared',aiVis:n.aiVis||'shared',
-          aiLocked:!!n.aiLocked,aiHidden:!!n.aiHidden,
-          updatedAt:tNew||(o?o.updatedAt||'':'')
-        };
-      }
+      var list=(items[k]&&items[k].entries)||[];
+      cache[k]=list;
+      var mine=list.filter(function(e){return e.owner==='her';});
+      var d=all[k]||{};
+      if(mine.length){d.user=mine[0].text;d.userVis=mine[0].vis;}
+      d.updatedAt=(items[k]&&items[k].updatedAt)||d.updatedAt||'';
+      all[k]=d;
     });
+    window.__hisEntries=cache;
+    try{localStorage.setItem('blueHomeDiaryEntriesV1',JSON.stringify(cache));}catch(e){}
     try{localStorage.setItem('blueHomeDiary_tangle',JSON.stringify(all));}catch(e){}
   }
   window.__diarySync=function(cb){
@@ -6587,18 +6626,13 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
       window.__diaryRev=d.rev||0;
       merge(d.items);
       if(cb)cb();
-    }).catch(function(){syncing=false;if(cb)cb();});
+    })['catch'](function(){syncing=false;if(cb)cb();});
   };
-  function push(k,d){
+  function push(k){
     var b=base();if(!b)return;
-    var it=diaryStore()[k]||d;
+    var d=diaryStore()[k]||{};
     fetch(b+'/room/diary',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({date:k,data:{
-        user:it.user||'',ai:it.ai||'',userNote:it.userNote||'',aiNote:it.aiNote||'',
-        userMood:it.userMood||'',aiMood:it.aiMood||'',important:!!it.important,
-        userVis:it.userVis||'shared',aiVis:it.aiVis||'shared',
-        updatedAt:it.updatedAt||new Date().toISOString()
-      }})}).catch(function(){});
+      body:JSON.stringify({date:k,data:{user:d.user||'',userVis:d.userVis||'shared'}})}).catch(function(){});
   }
   function makeRow(){
     var d=document.createElement('div');
@@ -6612,8 +6646,8 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
     css();
     var leaves=p.querySelectorAll('.bookSpread .bookLeaf');
     if(!leaves.length)return;
-    var left=leaves[0],right=leaves[1];
-    var headL=left.querySelector('.leafHeading'),headR=right.querySelector('.leafHeading');
+    var left=leaves[0];
+    var headL=left.querySelector('.leafHeading');
     if(headL&&!left.querySelector('#dMyVis')){
       var r1=makeRow();r1.id='dMyVis';
       headL.parentNode.insertBefore(r1,headL.nextSibling);
@@ -6623,15 +6657,10 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
           var all=diaryStore(),k=dateKey(bookDate),d=all[k]||{};
           d.userVis=b.dataset.v;d.updatedAt=new Date().toISOString();all[k]=d;
           try{localStorage.setItem('blueHomeDiary_tangle',JSON.stringify(all));}catch(e){}
-          push(k,d);
-          var sv=p.querySelector('#diarySaved');if(sv)sv.textContent='这一页的可见性改了';
+          push(k);
+          var sv=p.querySelector('#diarySaved');if(sv)sv.textContent='这一条的可见性改了';
         });
       });
-    }
-    if(headR&&!right.querySelector('#dHisVis')){
-      var tag=document.createElement('div');tag.className='dViz';tag.id='dHisVis';
-      tag.innerHTML='<span class="vtag">一起看</span>';
-      headR.parentNode.insertBefore(tag,headR.nextSibling);
     }
   }
   function curUserVis(fallback){
@@ -6640,7 +6669,6 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
     var on=box.querySelector('button.on');
     return on?on.dataset.v:(fallback||'shared');
   }
-
   var _bbp=window.buildBookPage;
   window.buildBookPage=function(){
     var p=_bbp.apply(this,arguments);
@@ -6652,17 +6680,16 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
     _load.apply(this,arguments);
     var p=window.buildBookPage();
     var k=dateKey(bookDate),d=diaryStore()[k]||{};
-    var av=d.aiVis||'shared';
-    var ta=p.querySelector('#diaryAI'),tn=p.querySelector('#diaryAINote');
-    var tag=p.querySelector('#dHisVis');
-    if(av==='locked'||av==='hidden'){
-      if(ta){ta.value='';ta.readOnly=true;ta.placeholder=av==='locked'?'他写了一页，锁着，你看不到':'这天他没留下什么';}
-      if(tn){tn.value='';tn.readOnly=true;tn.placeholder=av==='locked'?'他也锁着':'';}
-      if(tag){tag.innerHTML='<span class="vtag lock">'+(av==='locked'?'他锁起来了':'他藏起来了')+'</span>';}
-    }else{
-      if(ta){ta.readOnly=false;ta.placeholder='家 AI 今天想记录的事情、观察和感受……';}
-      if(tn){tn.readOnly=false;tn.placeholder='回应、提醒、想说的话或共同约定……';}
-      if(tag){tag.innerHTML='<span class="vtag">一起看</span>';}
+    var ta=p.querySelector('#diaryAI');
+    if(ta){
+      var his=((window.__hisEntries[k]||[]).filter(function(e){return e.owner==='him';}));
+      var lines=his.map(function(e){
+        if(e.locked)return '（这一条锁着，打不开）';
+        return e.text||'';
+      }).filter(function(x){return x;});
+      ta.value=lines.length?lines.join('\n'):'';
+      ta.readOnly=true;
+      ta.placeholder=lines.length?'':'这天他没写';
     }
     var box=p.querySelector('#dMyVis');
     var uv=d.userVis||'shared';
@@ -6671,18 +6698,13 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
   var _read=window.readDiaryFields;
   window.readDiaryFields=function(){
     var d=_read.apply(this,arguments);
-    var old=diaryStore()[dateKey(bookDate)]||{};
-    var av=old.aiVis||'shared';
-    if(av==='locked'||av==='hidden'){d.ai=old.ai||'';d.aiNote=old.aiNote||'';}
-    d.userVis=curUserVis(old.userVis||'shared');
-    d.aiVis=av;
+    d.userVis=curUserVis((diaryStore()[dateKey(bookDate)]||{}).userVis||'shared');
     return d;
   };
   var _save=window.saveDiaryDay;
   window.saveDiaryDay=function(silent){
     var r=_save.apply(this,arguments);
-    var k=dateKey(bookDate);
-    push(k,diaryStore()[k]||{});
+    push(dateKey(bookDate));
     return r;
   };
   var _show=window.showBookDetail;
@@ -6690,6 +6712,217 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
     if(opened){window.__diarySync(function(){try{loadDiaryDay();}catch(e){}});}
     return _show.apply(this,arguments);
   };
+})();
+
+/* v103：把「他那边」显示到她页面上 —— 心跳胶囊下面一行小字 */
+(function(){
+  function show(text){
+    if(!text)return;
+    var host=document.querySelector('#musicPage .muTogether');
+    if(!host)return;
+    var el=document.getElementById('muHisLine');
+    if(!el){
+      el=document.createElement('div');
+      el.id='muHisLine';
+      host.parentNode.insertBefore(el,host.nextSibling);
+    }
+    el.textContent=text;
+    el.style.opacity='1';
+  }
+  window.__showHis=show;
+})();
+
+/* v104：不再让页面自己冒充他说话；她的消息和动作上报给他 */
+(function(){
+  function hut(){try{return String(window.__hutBase?window.__hutBase():'');}catch(e){return '';}}
+  function ev(text){
+    var b=hut();if(!b)return;
+    try{fetch(b+'/room/event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:text})}).catch(function(){});}catch(e){}
+  }
+  // 切歌时原来会自动冒一句「切到《X》了，我在听」，这是假的，有个开关
+  // 真正的消息只应由他（MCP）主动发；这里把自动那句拦住
+  if(window.muChatSpeak){
+    var _speak=window.muChatSpeak;
+    window.muChatSpeak=function(t,only){
+      if(/^切到《.+》了/.test(String(t||'')))return;
+      return _speak.apply(this,arguments);
+    };
+  }
+  if(window.muChatPush){
+    var _push=window.muChatPush;
+    window.muChatPush=function(who,text){
+      try{if(who==='me'&&String(text||'').trim())ev('她说了：'+String(text).trim().slice(0,60));}catch(e){}
+      return _push.apply(this,arguments);
+    };
+  }
+  // 静音按钮 / 音量条 / 昼夜切换这些她手动做的，也告诉他
+  document.addEventListener('click',function(e){
+    var b=e.target&&e.target.closest?e.target.closest('button'):null;
+    if(!b)return;
+    var id=b.id||'';
+    if(id==='muPlay'||id==='muPause'||id==='muPrev'||id==='muNext'){
+      var s=(window.muSongs&&window.muCur>=0)?window.muSongs[window.muCur]:null;
+      ev('她点了'+(id==='muNext'?'下一首':id==='muPrev'?'上一首':id==='muPlay'?'播放':'暂停')+(s?'《'+s.name+'》':''));
+    }
+    if(id==='muNight'||id==='muDay'||/night/i.test(id))ev('她切了白天/夜晚');
+  },true);
+})();
+
+/* v105：叫醒他 —— 把「我现在在听什么」整理成一段话，一点就复制，粘给他就醒 */
+(function(){
+  function two(n){return (n<10?'0':'')+n;}
+  function fmt(s){s=Math.max(0,Math.floor(s||0));return Math.floor(s/60)+':'+two(s%60);}
+  function wakeText(){
+    var s=(window.muSongs&&typeof muCur!=='undefined'&&muCur>=0)?muSongs[muCur]:null;
+    var cur=(window.muAudio?muAudio.currentTime:0)||0;
+    var dur=(window.muAudio&&isFinite(muAudio.duration))?muAudio.duration:0;
+    var pill=document.getElementById('muLyricPill');
+    var lyric=pill?String(pill.textContent||'').trim():'';
+    var hist=(window.muChatHistory||[]).slice(-3).map(function(m){
+      return (m.role==='user'?'我':'你')+'：'+(m.content||'');
+    }).join('\n');
+    var L=['【小屋·一起听】'];
+    if(s){
+      L.push('我正在听《'+s.name+'》'+(s.ar?' - '+s.ar:'')+'，放到 '+fmt(cur)+(dur?' / '+fmt(dur):'')+'。');
+    }else{
+      L.push('我刚打开小屋，还没选歌。');
+    }
+    if(lyric)L.push('歌词正唱到「'+lyric+'」。');
+    if(hist)L.push('我们刚聊的：\n'+hist);
+    L.push('你来一起听：先调 hut_now_playing 看我这边在放什么，想说什么就用 hut_send_message 发给我，不想听了就用 hut_pause。');
+    return L.join('\n');
+  }
+  function toast(t){
+    var el=document.getElementById('muWakeToast');
+    if(!el){
+      el=document.createElement('div');el.id='muWakeToast';
+      document.body.appendChild(el);
+    }
+    el.textContent=t;
+    el.classList.add('on');
+    clearTimeout(el.__t);
+    el.__t=setTimeout(function(){el.classList.remove('on');},2600);
+  }
+  function showBox(txt){
+    var m=document.getElementById('muWakeBox');
+    if(!m){
+      m=document.createElement('div');m.id='muWakeBox';
+      m.innerHTML='<div class="mwInner"><div class="mwHead">复制这段发给他</div>'+
+        '<textarea id="muWakeTxt" readonly></textarea>'+
+        '<div class="mwBar"><button id="muWakeCopy">再复制一次</button><button id="muWakeClose">关掉</button></div></div>';
+      document.body.appendChild(m);
+      m.querySelector('#muWakeClose').addEventListener('click',function(){m.classList.remove('on');});
+      m.querySelector('#muWakeCopy').addEventListener('click',function(){copyBack(m.querySelector('#muWakeTxt').value);});
+    }
+    m.querySelector('#muWakeTxt').value=txt;
+    m.classList.add('on');
+    setTimeout(function(){try{m.querySelector('#muWakeTxt').select();}catch(e){}},200);
+  }
+  function copyBack(t){
+    try{
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(t).then(function(){toast('复制好了，去粘给他');},function(){showBox(t);});
+      }else{
+        var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.left='-9999px';
+        document.body.appendChild(ta);ta.select();
+        var ok=document.execCommand('copy');document.body.removeChild(ta);
+        if(ok)toast('复制好了，去粘给他');else showBox(t);
+      }
+    }catch(e){showBox(t);}
+  }
+  function wake(){
+    var t=wakeText();
+    copyBack(t);
+  }
+  window.__muWake=wake;
+  window.__muWakeText=wakeText;
+  function css(){
+    if(document.getElementById('v105css'))return;
+    var st=document.createElement('style');st.id='v105css';
+    st.textContent=
+      '.muWakeWrap{display:flex;align-items:center;gap:8px;padding:8px 12px 0}'+
+      '#muWakeBtn{flex:none;font-size:11px;color:#4f6c8a;background:rgba(255,255,255,.72);border:1px solid rgba(120,160,205,.45);border-radius:14px;padding:4px 11px;cursor:pointer;font-weight:600}'+
+      '#muWakeBtn:active{background:rgba(120,160,205,.2)}'+
+      '#musicPage.muDark #muWakeBtn{color:#d7e3f3;background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.22)}'+
+      '.muWakeHint{font-size:10px;color:#8fa3ba;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'+
+      '#muWakeToast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%) translateY(6px);background:rgba(38,52,70,.92);color:#fff;font-size:12px;padding:7px 14px;border-radius:14px;opacity:0;pointer-events:none;transition:.25s;z-index:99999}'+
+      '#muWakeToast.on{opacity:1;transform:translateX(-50%) translateY(0)}'+
+      '#muWakeBox{position:fixed;inset:0;background:rgba(12,22,34,.5);display:none;align-items:center;justify-content:center;z-index:99998;padding:20px}'+
+      '#muWakeBox.on{display:flex}'+
+      '#muWakeBox .mwInner{width:100%;max-width:340px;background:#fff;border-radius:16px;padding:14px}'+
+      '#muWakeBox .mwHead{font-size:13px;font-weight:700;color:#3b5d80;margin-bottom:8px}'+
+      '#muWakeTxt{width:100%;height:180px;border:1px solid #d8e3ef;border-radius:10px;padding:9px;font-size:12px;line-height:1.55;color:#33475c;resize:none}'+
+      '#muWakeBox .mwBar{display:flex;gap:8px;margin-top:10px}'+
+      '#muWakeBox button{flex:1;font-size:12px;padding:8px;border-radius:10px;border:1px solid #cfdded;background:#f6fafd;color:#3b5d80;cursor:pointer}';
+    document.head.appendChild(st);
+  }
+  function install(){
+    css();
+    var page=document.getElementById('musicPage');
+    if(!page)return;
+    var chatIn=page.querySelector('.muChatIn');
+    if(chatIn&&!document.getElementById('muWakeBtn')){
+      var wrap=document.createElement('div');
+      wrap.className='muWakeWrap';
+      wrap.innerHTML='<button type="button" id="muWakeBtn">叫醒他 · 一起听</button><span class="muWakeHint">会把他这个点的歌和这句歌词一起带过去</span>';
+      chatIn.parentNode.insertBefore(wrap,chatIn);
+      wrap.querySelector('#muWakeBtn').addEventListener('click',wake);
+    }
+    var together=page.querySelector('.muTogether');
+    if(together&&!together.dataset.wake){
+      together.dataset.wake='1';
+      together.style.cursor='pointer';
+      together.addEventListener('click',wake);
+    }
+  }
+  document.addEventListener('DOMContentLoaded',function(){setTimeout(install,600);});
+  setTimeout(install,1500);
+  setTimeout(install,4000);
+  window.__muWakeInstall=install;
+})();
+
+/* v106：进小屋那句「歌开始了，我在这儿」和每 5 分钟自动冒的话，都不是他说的，停掉 */
+(function(){
+  window.muChatGreet=function(){};
+  window.muStartProactive=function(){};
+  if(window.muStopProactive){try{window.muStopProactive();}catch(e){}}
+  setTimeout(function(){
+    if(window.muStopProactive){try{window.muStopProactive();}catch(e){}}
+  },3000);
+})();
+
+/* v107：他有动静就提醒她 —— 红点 + 轻提示 */
+(function(){
+  function css(){
+    if(document.getElementById('v107css'))return;
+    var st=document.createElement('style');st.id='v107css';
+    st.textContent=
+      '#muFlashToast{position:fixed;left:50%;top:78px;transform:translateX(-50%) translateY(-8px);'+
+      'background:rgba(38,52,70,.92);color:#fff;font-size:12px;padding:7px 14px;border-radius:14px;'+
+      'opacity:0;pointer-events:none;transition:.25s;z-index:99997}'+
+      '#muFlashToast.on{opacity:1;transform:translateX(-50%) translateY(0)}';
+    document.head.appendChild(st);
+  }
+  window.__muFlash=function(text){
+    css();
+    var fab=document.querySelector('#muChatFab');
+    if(fab){
+      var dot=fab.querySelector('.muChatDot');
+      if(dot){dot.style.display='block';dot.style.background='#e2685f';}
+    }
+    var el=document.getElementById('muFlashToast');
+    if(!el){el=document.createElement('div');el.id='muFlashToast';document.body.appendChild(el);}
+    el.textContent=text||'他给你发消息了';
+    el.classList.add('on');
+    clearTimeout(el.__t);
+    el.__t=setTimeout(function(){el.classList.remove('on');},2400);
+    try{if(navigator.vibrate)navigator.vibrate(30);}catch(e){}
+  };
+  // 打开聊天面板就把红点清掉
+  document.addEventListener('click',function(e){
+    var t=e.target&&e.target.closest?e.target.closest('#muChatFab,#muChatOpen'):null;
+    if(t){var dot=document.querySelector('#muChatFab .muChatDot');if(dot)dot.style.display='none';}
+  },true);
 })();
 
 </script>
