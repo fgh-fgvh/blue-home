@@ -7150,7 +7150,11 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
       if (my !== playSeq) return;                        // 已经换到别的歌，别动新歌
       var u = d && d.data && d.data[0] && d.data[0].url;
       if (!u) {
-        muSetNow(s, '这首暂无版权，等一下自动跳下一首');
+        if (!window.muUser) {
+          muSetNow(s, '还没登录网易云，只能看到歌名，放不出来（点右上角菜单登录）');
+          return;                       // 没登录时别乱跳歌，等她登录
+        }
+        muSetNow(s, '这首暂无版权或要 VIP，等一下自动跳下一首');
         setTimeout(function () { if (my !== playSeq) return; try { muStep(1); } catch (e) {} }, 1200);
         return;
       }
@@ -7247,14 +7251,33 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
 
   /* 歌词面板/菜单/音量条：点它们别误触唱片（唱片是点一下暂停） */
   setInterval(function () {
-    ['muLyricBox', 'muLyricToggle', 'muMenu', 'muVolRow'].forEach(function (id) {
-      var el = $id(id);
-      if (!el || el.__v110iso) return;
-      el.__v110iso = 1;
-      ['click', 'pointerdown', 'touchstart'].forEach(function (ev) {
-        el.addEventListener(ev, function (e) { e.stopPropagation(); }, true);
-      });
-    });
+    var disc = $id('muDisc');
+    if (!disc || disc.__v110guard) return;
+    disc.__v110guard = 1;
+    disc.onclick = function (e) {
+      var t = e.target;
+      // 只有点在唱片本身（不是歌词/菜单/音量条）才切播放，避免点歌词把歌停了
+      if (t && t.closest && (t.closest('#muLyricBox') || t.closest('#muMenu') ||
+          t.closest('#muVolRow') || t.closest('#muLyricToggle'))) return;
+      try { muTogglePlay(); } catch (err) {}
+    };
+  }, 800);
+
+
+  /* ---------- 10) https 页面上连本机 http 端口会被浏览器拦（表现为按钮点不动、二维码失败）---------- */
+  setInterval(function () {
+    if (location.protocol !== 'https:') return;
+    var lay = $id('muQrLayer');
+    if (!lay || !lay.classList.contains('on') || lay.__v110hint) return;
+    lay.__v110hint = 1;
+    var card = lay.querySelector('.muQrCard') || lay.firstElementChild;
+    if (!card) return;
+    var d = document.createElement('div');
+    d.style.cssText = 'margin:10px 0 0;padding:8px 10px;border-radius:10px;background:#fff3f3;' +
+      'color:#a33;font-size:12px;line-height:1.5;';
+    d.textContent = '这个页面是 https，浏览器不允许它连本机的 http 端口（所以按钮点不动、二维码也生成失败）。' +
+      '要放歌请在 http://127.0.0.1:3001/room 打开。';
+    card.appendChild(d);
   }, 1500);
 
   /* 播放/暂停事件：计时跟着走 */
@@ -7285,7 +7308,13 @@ if(Object.keys(ASSETS).some(function(k){return !ASSETS[k]||ASSETS[k]===PH;})) se
     var src = String(im.getAttribute('src') || '').split('?')[0];
     if (!src) return;
     say('图片没加载上，正在重试（' + im.__loadRetry + '/2）：' + (im.alt || ''));
-    setTimeout(function () { im.style.visibility = ''; im.src = src + '?r=' + Date.now(); }, 700);
+    var alt = '';
+    if (/\.webp$/i.test(src)) alt = src.replace(/\.webp$/i, '.png');
+    else if (/\.png$/i.test(src)) alt = src.replace(/\.png$/i, '.webp');
+    setTimeout(function () {
+      im.style.visibility = '';
+      im.src = (alt || src) + '?r=' + Date.now();
+    }, 700);
   }, true);
   document.addEventListener('load', function (ev) {
     var im = ev.target;
